@@ -1,0 +1,249 @@
+#!/bin/sh
+
+if [ $(id -u) != 0 ]; then
+
+	printf "Run it as root\n"
+	exit 1
+fi
+
+if [ $# = 1 ]; then
+
+	if [ ! -f "$1" ]; then
+
+		printf "File not found: \"$1\"\n"
+		exit 1
+	fi
+
+	PREF=$(realpath "$1")
+fi
+
+RED="\033[0;31m"
+GREEN="\033[0;32m"
+NC="\033[0m"
+
+DOWNLOAD='https://download.mozilla.org/?product=firefox-latest&os=linux64&lang=en-US'
+INSTALL=/opt/firefox
+
+if [ ! -d /opt ]; then
+	
+	mkdir /opt
+fi
+
+# Remove Firefox
+printf "Removing current Firefox versions"
+
+if [ -e $INSTALL ]; then
+
+	rm -R $INSTALL
+fi
+
+if [ -f /etc/os-release ]; then
+	
+	DIST=$(cat /etc/os-release | grep "^ID=")
+	
+	case "$DIST" in
+		ID=debian) printf Y | apt-get purge firefox-esr > /dev/null 2> /dev/null ;;
+		ID=ubuntu) printf Y | apt-get purge firefox > /dev/null 2> /dev/null ;;
+	esac
+fi
+
+printf " ${GREEN}[DONE]${NC}\n"
+
+# Download Firefox
+printf "Downloading Firefox"
+
+TEMP=$(mktemp -d)
+cd "$TEMP"
+
+wget -O firefox.tar.bz2 "$DOWNLOAD" > /dev/null 2> /dev/null
+
+if [ $? != 0 ]; then
+
+	printf " ${RED}[FAILED]${NC}\n"
+	rm -R "$TEMP"
+	exit 1
+fi
+
+printf " ${GREEN}[DONE]${NC}\n"
+
+# Install Firefox
+printf "Installing Firefox"
+
+tar xf firefox.tar.bz2
+mv firefox $INSTALL
+
+rm -R $INSTALL/browser/features/* 2> /dev/null
+
+if [ -d /usr/share/applications ]; then
+
+	printf "[Desktop Entry]\nType=Application\nName=Firefox\nComment=Web browser\nExec=/opt/firefox/firefox %f\nIcon=/opt/firefox/browser/chrome/icons/default/default64.png\nCategories=Internet;\n" > /usr/share/applications/firefox.desktop
+fi
+
+printf " ${GREEN}[DONE]${NC}\n"
+
+# Configure preferences
+if [ $# = 1 ]; then
+
+	printf "Configuring preferences"
+	cp "$PREF" $INSTALL/firefox.cfg
+	printf "pref(\"general.config.filename\", \"firefox.cfg\");\npref(\"general.config.obscure_value\", 0);\n" > $INSTALL/defaults/pref/autoconfig.js
+	printf " ${GREEN}[DONE]${NC}\n"
+fi
+
+# Create empty profiles
+printf "Creating profiles"
+
+if [ -d /home ]; then
+
+	wget https://raw.githubusercontent.com/sathyn/firefoxsetup/master/search.json.mozlz4 > /dev/null 2> /dev/null
+	
+	if [ $? = 0 ]; then
+
+		SEARCH="$TEMP/search.json.mozlz4"
+	fi
+
+	cd /home
+	for DIR in *; do
+
+		MOZILLA="$DIR/.mozilla"
+		FIREFOX="$DIR/.mozilla/firefox"
+		RELEASE=srh1zn4l.default-release
+		SHARED=d5l0wli5.default
+
+		USER=$(cat /etc/passwd | grep "/home/$DIR" | awk -F ':' '{print $1}')
+
+		if [ -n "$USER" ]; then
+
+			if [ -d "$MOZILLA" ]; then
+
+				if [ -e "$FIREFOX" ]; then
+
+					rm -R "$FIREFOX"
+				fi
+
+				mkdir "$FIREFOX"
+			else
+
+				mkdir "$MOZILLA"
+				mkdir "$FIREFOX"
+			fi
+
+			mkdir "$FIREFOX/$RELEASE"
+ 			mkdir "$FIREFOX/$SHARED"
+			mkdir "$FIREFOX/Pending Pings"
+			mkdir "$FIREFOX/Crash Reports"
+
+			printf "[6AFDA46A1A8AD48]\nDefault=$RELEASE\nLocked=1\n" > "$FIREFOX/installs.ini"
+			printf "[Profile1]\nName=default\nIsRelative=1\nPath=$SHARED\nDefault=1\n\n[Profile0]\nName=default-release\nIsRelative=1\nPath=$RELEASE\n\n[General]\nStartWithLastProfile=1\nVersion=2\n\n[Install6AFDA46A1A8AD48]\nDefault=$RELEASE\nLocked=1\n" > "$FIREFOX/profiles.ini"
+			printf "{\n\"created\":1262304000,\n\"firstUse\":null\n}\n" > "$FIREFOX/$SHARED/times.json"
+			printf "{\"created\":1262304000,\"firstUse\":1262304000}" > "$FIREFOX/$RELEASE/times.json"
+	
+			if [ -n "$SEARCH" ]; then	
+
+				cp "$SEARCH" "$FIREFOX/$RELEASE/"
+			fi
+
+			chmod 700 "$FIREFOX/$RELEASE"
+			chmod 700 "$FIREFOX/$SHARED"
+			chmod 700 "$FIREFOX/Pending Pings"
+			chmod 700 "$FIREFOX/Crash Reports"
+			chmod 644 "$FIREFOX/profiles.ini"
+			chmod 644 "$FIREFOX/installs.ini"
+			chmod 700 "$FIREFOX/$SHARED/times.json"
+			chmod 700 "$FIREFOX/$RELEASE/times.json"
+	
+			chown "$USER" -R "$FIREFOX"
+		fi
+	done
+fi
+
+printf " ${GREEN}[DONE]${NC}\n"
+
+# Extensions
+DOWNLOAD='https://addons.mozilla.org/firefox/downloads/file'
+EXTENSIONS=$INSTALL/browser/extensions
+
+printf "Fetching list of extensions"
+
+if [ ! -d $EXTENSIONS ]; then
+
+	mkdir $EXTENSIONS
+else
+
+	rm -R $EXTENSIONS/* 2> /dev/null
+fi
+
+cd "$TEMP"
+
+wget https://raw.githubusercontent.com/sathyn/firefoxsetup/master/extensions > /dev/null 2> /dev/null
+
+if [ $? != 0 ]; then
+
+	printf " ${RED}[FAILED]${NC}\nAn error ocurred and extensions weren't installed\n"
+
+	if [ -z "$SEARCH" ]; then
+
+		printf "An error ocurred and search engine wasn't configured\n"
+	fi
+	
+	rm -R "$TEMP"
+	exit 0
+fi
+
+printf " ${GREEN}[DONE]${NC}\n"
+
+I1=1
+
+while true; do
+
+	NAME=$(awk "NR==$I1" extensions)
+
+	if [ -z "$NAME" ]; then
+
+		break
+	fi
+
+	I2=$(expr $I1 + 1)
+	I3=$(expr $I1 + 2)
+
+	FILE=$(awk "NR==$I2" extensions)
+	URL=$(awk "NR==$I3" extensions)
+
+	printf "Installing $NAME"
+
+	mkdir "$NAME"
+	cd "$NAME"
+
+	wget "$DOWNLOAD$URL/$FILE" > /dev/null 2> /dev/null
+
+	if [ $? = 1 ]; then
+
+		printf " ${RED}[FAILED]${NC}\n"
+	else
+
+		unzip "$FILE" > /dev/null
+		ID=$(cat manifest.json | grep \"id\": | awk -F '"' '{print $4}')
+
+		if [ -z "$ID" ]; then
+
+			ID=$(cat mozilla-recommendation.json | awk -F '"' '{print $4}')
+		fi
+
+		if [ -z "$ID" ]; then
+
+			printf " ${RED}[FAILED]${NC}\n"
+		else
+
+			mv $FILE "$EXTENSIONS/$ID.xpi"
+			printf " ${GREEN}[DONE]${NC}\n"
+		fi
+	fi
+
+	cd ..
+	
+	I1=$(expr $I1 + 3)
+done
+
+# Finish
+rm -R "$TEMP"
+exit 0
